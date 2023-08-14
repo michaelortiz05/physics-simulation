@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>CS 418 Burst</title>
+    <script src="math.js"></script><!-- Basic math operations -->
+    <script src="matrices.js"></script><!-- Basic matrix operations -->
+<script>
+const IlliniBlue = new Float32Array([0.075, 0.16, 0.292, 1])
+const g = 9.80665 * 3
+const eulerUpdatePosition = (p, v, t) => p.map((e, i) => e + v[i] * t)
+const eulerUpdateVelocity = (v, a, t) => v.map((e, i) => e + a[i] * t)
+const computeRNumber = (v, r) => 135000 * mag(v) * r
+const wallDim = 12
+const eWall = 0.8
+const eParticle = 0.001
+let startTime;
+let prevTime;
+let frameCount = 0;
+/**
+ * @param x x coordinate
+ * @param y y coordinate
+ * @param z z coordinate
+ * @param v velocity
+ * @param c color
+ * Creates a sphere object with the given parameters
+ */
+function createSphere(x, y, z, vx, vy, vz, m, r, c) {
+    let sphere =  {
+        position: [x, y, z],
+        velocity: [vx, vy, vz],
+        mass: m,
+        radius: r,
+        color: c
+    }
+    sphere.acceleration = div(computeForce(sphere.mass, sphere.radius, sphere.velocity), sphere.mass)
+    return sphere
+}
+/**
+ * @param p1 the first particle
+ * @param p2 the second particle
+ * Compute the collision between two particles
+ */
+function computeParticleCollision(p1, p2) {
+    let diff = sub(p1.position,p2.position)
+    let dSquared = dot(diff, diff)
+    let rSum = p1.radius + p2.radius//p1.radius / (1 + ((p1.radius - 0.1) / 0.2) * 9) + p2.radius/(1 + ((p2.radius - 0.1) / 0.2) * 9)//p1.radius + p2.radius
+    let rSquare = rSum * rSum
+    let v = sub(p1.velocity, p2.velocity)
+    let d = normalize(diff)
+    let dotProduct = dot(v, d)
+    if (dSquared <= rSquare) {
+        let weight =  p2.mass / (p1.mass + p2.mass) // * 2
+        let impulse = mul(d, dot(v, d) * weight * -1 * (1 + eParticle))
+        p1.velocity = add(p1.velocity, impulse)
+        p2.velocity = sub(p2.velocity, impulse)
+
+        // nudge colliding partiles to avoid duplicate collision detection
+        let penetrationDepth = rSum - Math.sqrt(dSquared)
+        let correctionFactor = 0.3
+        let correction = mul(d, penetrationDepth * correctionFactor)
+        p1.position = add(p1.position, mul(correction, p2.radius / (p1.radius + p2.radius))) 
+        p2.position = sub(p2.position, mul(correction, p1.radius / (p1.radius + p2.radius)))
+    }      
+}
+
+/*
+ * Helper function to detect collisions with the wall
+ */
+function detectWallCollision(particle) {
+    let pr = particle.position.map(e => Math.abs(e) + particle.radius)
+    if (Math.abs(pr[0]) >= wallDim) {
+        return true
+    }
+    if (Math.abs(pr[1]) >= wallDim) {
+        return true
+    }
+    if (Math.abs(pr[2]) >= wallDim) {
+        return true
+    }
+    return false
+}
+/**
+ * @param the position of the sphere
+ * Detects if the sphere has collided with the bounding box and adjusts momentum
+ */
+function computeWallCollision(particle) {
+    let pr = particle.position.map(e => Math.abs(e) + particle.radius)
+    let velocity = particle.velocity
+    if (Math.abs(pr[0]) >= wallDim) {
+        let s = -1 * dot(particle.velocity, [1,0,0])
+        velocity = add(velocity, mul([1,0,0], (1 + eWall) * s))
+    }
+    if (Math.abs(pr[1]) >= wallDim) {
+        let s = -1 * dot(particle.velocity, [0,1,0])
+        velocity = add(velocity, mul([0,1,0], (1 + eWall) * s))
+    }
+    if (Math.abs(pr[2]) >= wallDim) {
+        let s = -1 * dot(particle.velocity, [0,0,1])
+        velocity = add(velocity, mul([0,0,1], (1 + eWall) * s))
+    }
+    return velocity
+}
+/**
+ * @param mass     the mass of the sphere
+ * @param radius   the radius of the sphre
+ * @param velocity the velocity of the sphere
+ * Returns the force vector acting on a sphere
+ */
+function computeForce(mass, radius, velocity) {
+    let c = 0.001
+    let r = computeRNumber(velocity, radius)
+    // gravity
+    let gravity = [0, -1 * g * mass, 0]
+    
+    // drag
+    // let drag = [-1 * c * velocity[0] * radius * radius,
+    //             -1 * c * velocity[1]  * radius * radius,
+    //             -1 * c * velocity[2]  * radius * radius]
+    let drag = [ c * velocity[0] * velocity[0] * (mass / radius),
+                 c * velocity[1] * velocity[1] * (mass / radius),
+                 c * velocity[2] * velocity[2] * (mass / radius)]
+    for (let i = 0; i < drag.length; i++) {
+        if (velocity[i] > 0)
+            drag[i] *= -1
+    }
+    return add(gravity, drag)
+}
+/**
+ * Function to control animation
+ */
+function timeStep(miliseconds) {
+    frameCount += 1
+    let seconds = miliseconds / 1000
+    if (!startTime) startTime = seconds
+    if (!prevTime) prevTime = seconds
+    let elapsedTime = seconds - startTime
+    let deltaTime = seconds - prevTime
+    prevTime = seconds 
+    if (elapsedTime  >= 10 || reset) {
+        reset = reset ? !reset : reset
+        startTime = null
+        prevTime = null
+        cancelAnimationFrame(window.pending)
+        setTimeout(() => {
+            frameCount = 0
+            setupScene()
+        }, 3)
+    } 
+    else { 
+        draw(deltaTime ? deltaTime : 0.016) // 0.016 0.04
+        requestAnimationFrame(timeStep)
+        if(elapsedTime)
+            document.querySelector('#fps').innerHTML = (frameCount / elapsedTime).toFixed(0)
+    }
+}
+/*
+ * @param deltaTime the timestep
+ * computes particle positions and draws the scene
+ */
+function draw(deltaTime) {
+    gl.clearColor(...IlliniBlue)
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+    gl.useProgram(program)
+    gl.bindVertexArray(sphereGeom.vao)
+
+    // lighting
+    let lightdir = normalize([1,20,1])
+    let halfway = normalize(add(lightdir, [0,0,1]))
+    gl.uniform3fv(gl.getUniformLocation(program, 'lightdir'), lightdir)
+    gl.uniform3fv(gl.getUniformLocation(program, 'lightcolor'), [1,.5,1])
+
+    lightdir = normalize([-2,0,1])
+    gl.uniform3fv(gl.getUniformLocation(program, 'lightdir2'), lightdir)
+    gl.uniform3fv(gl.getUniformLocation(program, 'lightcolor2'), [1,1,1])
+
+
+    // particle collision detection grid handling
+    window.gridSize = Math.ceil((wallDim * 2) / (maxR * 2));
+    let totalCells = gridSize * gridSize * gridSize;
+    let grid = new Array(totalCells).fill(null).map(() => []);
+    particles.forEach(particle => {
+        let cellIndex = getCellIdx(particle.position, 2 * maxR)
+        if (!isNaN(cellIndex[0]) && !isNaN(cellIndex[1]) && !isNaN(cellIndex[2])) 
+            grid[to1DIndex(cellIndex[0], cellIndex[1], cellIndex[2], gridSize)].push(particle)
+    })
+    for (let i = 0; i < totalCells; i++) {
+        let [x, y, z] = to3DIndex(i, gridSize);
+        let currentCell = grid[i];
+        let adjacentCells = getAdjacentCells(grid, x, y, z, gridSize)
+
+        currentCell.forEach((particle1) => {
+            currentCell.forEach((particle2) => {
+                if (particle1 !== particle2) {
+                    computeParticleCollision(particle1, particle2)
+                }
+            })
+            adjacentCells.forEach((adjacentIndex) => {
+                grid[adjacentIndex].forEach((particle2) => {
+                    computeParticleCollision(particle1, particle2)
+                })
+            })
+        })
+    }
+    // draw each particle, update positions
+    particles.forEach((particle, i) => {
+        particle.velocity = computeWallCollision(particle)
+        let newVelocity = eulerUpdateVelocity(particle.velocity, particle.acceleration, deltaTime)
+        particle.velocity = newVelocity
+        particle.acceleration = div(computeForce(particle.mass, particle.radius, particle.velocity), particle.mass)
+        let newPosition = eulerUpdatePosition(particle.position, particle.velocity, deltaTime)
+        particle.position = [clamp(newPosition[0], -1 * wallDim + particle.radius, wallDim - particle.radius), clamp(newPosition[1], -1 * wallDim + particle.radius, wallDim - particle.radius),
+                            clamp(newPosition[2], -1 * wallDim + particle.radius, wallDim - particle.radius)]
+        let scale = m4scale(1, 1, 1)
+        let translate = m4translate(particle.position[0],particle.position[1],particle.position[2])
+        gl.uniform4fv(gl.getUniformLocation(program, 'color'), particle.color)
+        let m = translate//m4mult(scale, translate)
+        gl.uniform1f(gl.getUniformLocation(program, 'radius'), particle.radius)
+        gl.uniformMatrix4fv(gl.getUniformLocation(program, 'mv'), false, m4mult(v,m))
+        gl.uniformMatrix4fv(gl.getUniformLocation(program, 'p'), false, p)
+        gl.drawElements(sphereGeom.mode, sphereGeom.count, sphereGeom.type, 0)
+        
+    })
+}
+/**
+ * Compile, link, other option-independent setup
+ */
+ async function setup(event) {
+    window.gl = document.querySelector('canvas').getContext('webgl2',
+        // optional configuration object: see https://developer.mozilla.org/en-US/docs/Web/API/HTMLCanvasElement/getContext
+        {antialias: false, depth:true, preserveDrawingBuffer:true}
+    )
+    let vs = await fetch('vert.glsl').then(res => res.text())
+    let fs = await fetch('frag.glsl').then(res => res.text())
+    window.program = compileAndLinkGLSL(vs,fs)
+    gl.enable(gl.DEPTH_TEST)
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+    fillScreen()
+    setupScene()
+}
+/**
+ * Generate geometry, render the scene
+ */
+async function setupScene() {
+    let maxR = 0
+    let sphereJSON = await fetch('sphere.json').then(r=>r.json())
+    window.sphereGeom = setupGeomery(sphereJSON) 
+    let numParticlesInput = document.getElementById("numParticles");
+    let numParticlesValue = parseInt(numParticlesInput.value);
+    let numParticles = clamp(numParticlesValue, 1, 2000)
+    window.particles = []
+    for (let i = 0; i < numParticles; i++) {
+        let r = Math.abs(getRandomArbitrary(0.3,0.9))
+        maxR = Math.max(maxR, r)
+        let m = (4/3) * Math.PI * Math.pow(r, 3) //* (1 + ((r - 0.1) / 0.2) * 9) 
+        particles.push(createSphere
+            (getRandomInt(10) - 8,//getRandomInt(50) - 25, 
+            getRandomInt(10) - 8,//getRandomInt(50) - 25, 
+            getRandomInt(10) - 8, //getRandomInt(50) - 25, 
+            getRandomArbitrary(0,50), 
+            getRandomArbitrary(0,50),
+            getRandomArbitrary(0,50),
+            m,
+            r,
+            new Float32Array([Math.random(), Math.random(), Math.random(), 1])))
+    }  
+    window.maxR = maxR
+    window.v = m4view([0,0,30], [0,0,0], [0,1,0])
+    timeStep()
+}
+/*
+ * Resizes the canvas to completely fill the screen
+ */
+function fillScreen() {
+    let canvas = document.querySelector('canvas')
+    document.body.style.margin = '0'
+    canvas.style.width = '100%'
+    canvas.style.height = '100%'
+    canvas.width = canvas.clientWidth
+    canvas.height = canvas.clientHeight
+    canvas.style.width = ''
+    canvas.style.height = ''
+    if (window.gl) {
+        gl.viewport(0,0, canvas.width, canvas.height)
+        window.p = m4perspNegZ(0.01, 75, 1.5, canvas.width, canvas.height)
+    }
+}
+/**
+ * Helper function: resets scene
+ */ 
+
+ function resetScene() {
+    reset = true
+}
+window.reset = false
+window.addEventListener('load', setup)
+window.addEventListener('resize', fillScreen)
+</script>
+<script>
+/**
+ * Sends per-vertex data to the GPU and connects it to a VS input
+ * 
+ * @param data    a 2D array of per-vertex data (e.g. [[x,y,z,w],[x,y,z,w],...])
+ * @param program a compiled and linked GLSL program
+ * @param vsIn    the name of the vertex shader's `in` attribute
+ * @param mode    (optional) gl.STATIC_DRAW, gl.DYNAMIC_DRAW, etc
+ * 
+ * @returns the ID of the buffer in GPU memory; useful for changing data later
+ */
+function supplyDataBuffer(data, program, vsIn, mode) {
+    if (mode === undefined) mode = gl.STATIC_DRAW
+    
+    let buf = gl.createBuffer()
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf)
+    let f32 = new Float32Array(data.flat())
+    gl.bufferData(gl.ARRAY_BUFFER, f32, mode)
+    
+    let loc = gl.getAttribLocation(program, vsIn)
+    gl.vertexAttribPointer(loc, data[0].length, gl.FLOAT, false, 0, 0)
+    gl.enableVertexAttribArray(loc)
+    
+    return buf;
+}
+    
+/**
+ * Creates a Vertex Array Object and puts into it all of the data in the given
+ * JSON structure, which should have the following form:
+ * 
+ * ````
+ * {"triangles": a list of of indices of vertices
+ * ,"attributes":
+ *  {name_of_vs_input_1: a list of 1-, 2-, 3-, or 4-vectors, one per vertex
+ *  ,name_of_vs_input_2: a list of 1-, 2-, 3-, or 4-vectors, one per vertex
+ *  }
+ * }
+ * ````
+ * 
+ * @returns an object with four keys:
+ *  - mode = the 1st argument for gl.drawElements
+ *  - count = the 2nd argument for gl.drawElements
+ *  - type = the 3rd argument for gl.drawElements
+ *  - vao = the vertex array object for use with gl.bindVertexArray
+ */
+function setupGeomery(geom) {
+    var triangleArray = gl.createVertexArray()
+    gl.bindVertexArray(triangleArray)
+
+    for(let name in geom.attributes) {
+        let data = geom.attributes[name]
+        supplyDataBuffer(data, program, name)
+    }
+
+    var indices = new Uint16Array(geom.triangles.flat())
+    var indexBuffer = gl.createBuffer()
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer)
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW)
+
+    return {
+        mode: gl.TRIANGLES,
+        count: indices.length,
+        type: gl.UNSIGNED_SHORT,
+        vao: triangleArray
+    }
+}
+
+/**
+ * Helper function from mozilla docs
+ */
+function getRandomInt(max) {
+  return Math.floor(Math.random() * max);
+}
+/**
+ * Helper function from mozilla docs
+ */
+function getRandomArbitrary(min, max) {
+  let value = Math.random() * (max - min) + min;
+  let sign = Math.random()
+  return sign >= 0.5 ? value : -1 * value 
+}
+/**
+ * Helper function to clamp numbers
+ */ 
+function clamp(x, min, max) {
+  return Math.min(Math.max(x, min), max);
+}
+/**
+ * @param position  particle position
+ * @param cellSize  the size of the cells based on largest radius
+ * @param numCells  The number of cells in one side of the grid
+ * Helper function to get cell idx in grid
+ */ 
+ function getCellIdx(position, cellSize) {
+    let x = Math.floor((position[0] + gridSize * cellSize / 2) / cellSize);
+    let y = Math.floor((position[1] + gridSize * cellSize / 2) / cellSize);
+    let z = Math.floor((position[2] + gridSize * cellSize / 2) / cellSize);
+    
+    return [x, y, z];
+}
+/*
+ * @param x         the x coordinate
+ * @param y         the y coordinate
+ * @param z         the z coorinate
+ * @param gridsize  the length of the grid
+ * Helper function to take a 3D index and convert it to a 1D index
+ */
+function to1DIndex(x, y, z, gridSize) {
+    return x * gridSize * gridSize + y * gridSize + z;
+}
+/*
+ * @param index     the 3 tuple index
+ * @param gridsize  the length of the grid
+ * Helper function to take a 1D index and convert it to a 3D index
+ */
+function to3DIndex(index, gridSize) {
+    const z = index % gridSize;
+    const y = Math.floor(index / gridSize) % gridSize;
+    const x = Math.floor(index / (gridSize * gridSize));
+    return [x, y, z];
+}
+/**
+ * @param grid      the grid of cells
+ * @param x         the x coordinate
+ * @param y         the y coordinate
+ * @param z         the z coorinate
+ * @param gridsize  the length of the grid
+ * Helper function to return the neighboring cells in a grid
+ */ 
+ function getAdjacentCells(grid, x, y, z, gridSize) {
+    let adjacentCells = []
+    for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dz = -1; dz <= 1; dz++) {
+                let newX = x + dx
+                let newY = y + dy
+                let newZ = z + dz
+                if (
+                    newX >= 0 &&
+                    newX < gridSize &&
+                    newY >= 0 &&
+                    newY < gridSize &&
+                    newZ >= 0 &&
+                    newZ < gridSize &&
+                    (dx !== 0 || dy !== 0 || dz !== 0)
+                ) {
+                    let index1D = to1DIndex(newX, newY, newZ, gridSize)
+                    adjacentCells.push(index1D)
+                }
+            }
+        }
+    }
+    return adjacentCells;
+}
+
+/**
+ * takes vs and fs and compiles them and links them
+ */   
+function compileAndLinkGLSL(vs_source, fs_source) {
+    let vs = gl.createShader(gl.VERTEX_SHADER)
+    gl.shaderSource(vs, vs_source)
+    gl.compileShader(vs)
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(vs))
+        throw Error("Vertex shader compilation failed")
+    }
+
+    let fs = gl.createShader(gl.FRAGMENT_SHADER)
+    gl.shaderSource(fs, fs_source)
+    gl.compileShader(fs)
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(fs))
+        throw Error("Fragment shader compilation failed")
+    }
+
+    let program = gl.createProgram()
+    gl.attachShader(program, vs)
+    gl.attachShader(program, fs)
+    gl.linkProgram(program)
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        console.error(gl.getProgramInfoLog(program))
+        throw Error("Linking failed")
+    }
+    return program
+}
+
+</script>
+    
+<style>
+html, body {
+    margin: 0;
+    padding: 0;
+}
+
+html, body {
+    height: 100%;
+    width: 100%;
+    overflow: hidden; 
+}
+
+.display {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+}
+
+.fullscreen-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+</style>
+</head>
+<body>
+    <div id="fps" style="position: absolute; top: 10px; right: 10px; color: rgb(5, 255, 13); z-index: 1;"></div>
+    <div class="display"><canvas width="500" height="500"></canvas></div>
+    <div style="position: absolute; top: 30px; right: 10px; display: flex; align-items: center; z-index: 1;">
+        <label for="numParticles" style="color: rgb(255, 255, 255);">Number of particles:</label>
+        <input type="number" id="numParticles" style="color: rgb(10,10,10); margin-left: 5px;" name="numParticles" min="1" max="1000" value="50" required>
+    </div>        
+    <button onclick="resetScene()"  style="position: absolute; top: 60px; right: 10px; width: 191px; color: rgb(0, 0, 0); z-index: 1;">Reset</button>
+</body>
+</html>
+        
+        
